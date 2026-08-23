@@ -1,0 +1,1 @@
+GRANT SELECT (subdistrict) ON public.vendors TO anon, authenticated;

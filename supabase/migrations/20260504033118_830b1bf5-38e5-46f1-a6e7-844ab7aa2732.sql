@@ -1,0 +1,1 @@
+CREATE POLICY "Public can view product unit availability" ON public.product_units FOR SELECT TO anon, authenticated USING (true);
