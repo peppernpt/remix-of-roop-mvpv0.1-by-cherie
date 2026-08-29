@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, Navigate, useNavigate } from "react-router-dom";
 import { Store, Check, Eye, EyeOff, Upload } from "lucide-react";
 import BackButton from "@/components/BackButton";
 import { z } from "zod";
@@ -8,6 +8,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "@/hooks/use-toast";
+import { stashPendingStore, clearPendingStore } from "@/lib/pending-profile";
+import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/integrations/supabase/client";
 import { cn } from "@/lib/utils";
 
@@ -28,8 +30,15 @@ type Step1Data = z.infer<typeof step1Schema>;
 
 const VendorSignup = () => {
   const navigate = useNavigate();
+  const { user, loading } = useAuth();
   const [step, setStep] = useState<1 | 2>(1);
   const [step1, setStep1] = useState<Step1Data | null>(null);
+
+  // Already signed in: this form would create a SECOND account. Send existing
+  // users to the authenticated store-setup flow instead.
+  if (!loading && user) {
+    return <Navigate to="/vendor/setup" replace />;
+  }
 
   return (
     <div className="min-h-screen bg-muted/30 flex flex-col">
@@ -235,7 +244,7 @@ const Step2Form = ({
         email: step1.email,
         password: step1.password,
         options: {
-          emailRedirectTo: `${window.location.origin}/vendor/dashboard`,
+          emailRedirectTo: `${window.location.origin}/vendor/setup`,
           data: {
             full_name: step1.fullName,
             phone: step1.phone,
@@ -247,8 +256,20 @@ const Step2Form = ({
       const userId = authData.user?.id;
       if (!userId) throw new Error("Account creation failed");
 
+      // Duplicate email: Supabase returns a user with no identities.
+      if (!authData.session && (authData.user?.identities?.length ?? 0) === 0) {
+        toast({
+          title: "This email is already registered",
+          description:
+            "Sign in with this email, then finish your store at Vendor Dashboard \u2192 Set up your store.",
+          variant: "destructive",
+        });
+        return;
+      }
+
       // 2) If session was returned (email confirmation off), upload logo and create vendor row
       if (authData.session) {
+        clearPendingStore(step1.email);
         let logoUrl: string | null = null;
         if (logoFile) {
           const ext = logoFile.name.split(".").pop() || "png";
@@ -264,8 +285,7 @@ const Step2Form = ({
           }
         }
 
-        const { error: vendorErr } = await supabase.from("vendors").insert({
-          owner_id: userId,
+        const storePayload = {
           store_name: storeName.trim(),
           logo_url: logoUrl,
           subdistrict: subdistrict.trim() || null,
@@ -277,37 +297,47 @@ const Step2Form = ({
           line_id: lineId.trim() || null,
           instagram: instagram.trim() || null,
           rental_details_policy: rentalPolicy.trim() || null,
-
           deposit_per_item: 0,
           is_active: true,
-        });
-        if (vendorErr) throw vendorErr;
+        };
+        // Preferred: the provisioning RPC (creates the store + grants the
+        // vendor role atomically). Older databases fall back to direct insert.
+        const { error: rpcErr } = await supabase.rpc(
+          "create_vendor_store" as never,
+          { _store: storePayload } as never,
+        );
+        if (rpcErr) {
+          const missingFn = /create_vendor_store|function|schema cache/i.test(rpcErr.message ?? "");
+          if (!missingFn) throw rpcErr;
+          const { error: vendorErr } = await supabase
+            .from("vendors")
+            .insert({ owner_id: userId, ...storePayload });
+          if (vendorErr) throw vendorErr;
+        }
 
         toast({ title: "Welcome to ROOP", description: "Your vendor store is ready." });
         onComplete();
       } else {
-        // Email confirmation required — vendor row will need to be created on first login
+        // Email confirmation required — the store details are stashed (keyed by
+        // email, in localStorage so they survive the round trip) and applied on
+        // /vendor/setup after the first sign-in.
+        stashPendingStore(step1.email, {
+          storeName,
+          storeCategory,
+          storeDescription,
+          storeAddress,
+          subdistrict,
+          city,
+          postalCode,
+          lineId,
+          instagram,
+          rentalPolicy,
+        });
         toast({
           title: "Check your email",
-          description: "Confirm your email to finish setting up your store.",
+          description:
+            "Confirm your email, sign in, and your store details will be waiting on the setup page.",
         });
-        // Stash store details for post-confirm setup
-        sessionStorage.setItem(
-          "roop:vendor-pending",
-          JSON.stringify({
-            storeName,
-            subdistrict,
-            city,
-            storeDescription,
-            storeCategory,
-            storeAddress,
-            postalCode,
-            lineId,
-            instagram,
-            rentalPolicy,
-
-          })
-        );
         onComplete();
       }
     } catch (err: any) {

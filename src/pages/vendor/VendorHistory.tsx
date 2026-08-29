@@ -7,6 +7,7 @@ import OrderDetailDialog, { type VendorBooking } from "@/components/vendor/Order
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { parseDatabaseDate } from "@/lib/date-utils";
 import { cn } from "@/lib/utils";
 import {
   type BookingStatus,
@@ -21,7 +22,8 @@ const fmtTHB = (n: number) =>
 
 const fmtRange = (a: string, b: string) => {
   const o = { day: "2-digit", month: "short" } as const;
-  return `${new Date(a).toLocaleDateString("en-GB", o)} – ${new Date(b).toLocaleDateString("en-GB", o)}`;
+  // parseDatabaseDate: date-only values must never shift a day via UTC parsing.
+  return `${parseDatabaseDate(a).toLocaleDateString("en-GB", o)} – ${parseDatabaseDate(b).toLocaleDateString("en-GB", o)}`;
 };
 
 const FILTERS = [

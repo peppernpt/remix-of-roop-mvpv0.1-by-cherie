@@ -26,10 +26,10 @@ const History = () => {
   const [detailId, setDetailId] = useState<string | null>(null);
 
   const filtered = useMemo(() => {
-    // History page = completed + cancelled bookings only.
+    // History page = finished bookings (completed, cancelled or rejected).
     // Active lifecycle bookings live on /home and /tracking.
     const base = data.filter(
-      (b) => b.status === "completed" || b.status === "cancelled",
+      (b) => b.status === "completed" || b.status === "cancelled" || b.status === "rejected",
     );
     return base.filter((b) => {
       if (q) {
@@ -38,7 +38,7 @@ const History = () => {
       }
       if (filter === "all") return true;
       if (filter === "returned") return b.status === "completed";
-      if (filter === "cancelled") return b.status === "cancelled";
+      if (filter === "cancelled") return b.status === "cancelled" || b.status === "rejected";
       return true;
     });
   }, [data, filter, q]);

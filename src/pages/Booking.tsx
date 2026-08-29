@@ -380,11 +380,13 @@ const Booking = () => {
         selectedEndDate: date,
         productUnits: product.units,
         existingBookings: product.bookings,
+        candidateDeliveryMethod: deliveryMethod || null,
+        candidateProvince: province || null,
       });
       cache.set(key, !free);
       return !free;
     };
-  }, [product]);
+  }, [product, deliveryMethod, province]);
 
   const isBlockedByOthers = (date: Date) => isDayFullyBooked(date);
 
@@ -409,6 +411,8 @@ const Booking = () => {
         selectedEndDate: date,
         productUnits: product.units,
         existingBookings: product.bookings,
+        candidateDeliveryMethod: deliveryMethod || null,
+        candidateProvince: province || null,
       })
     ) {
       return true;
@@ -428,8 +432,10 @@ const Booking = () => {
       selectedEndDate: endDate,
       productUnits: product.units,
       existingBookings: product.bookings,
+      candidateDeliveryMethod: deliveryMethod || null,
+      candidateProvince: province || null,
     });
-  }, [product, startDate, endDate]);
+  }, [product, startDate, endDate, deliveryMethod, province]);
 
   const datesAvailable = !startDate || !endDate || !product || !!assignedUnit;
 

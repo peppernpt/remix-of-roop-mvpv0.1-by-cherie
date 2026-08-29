@@ -11,7 +11,8 @@ export type BookingStatus =
   | "on_return"
   | "for_review"
   | "completed"
-  | "cancelled";
+  | "cancelled"
+  | "rejected";
 
 const META: Record<BookingStatus, { label: string; cls: string }> = {
   pending_vendor_review: {
@@ -34,6 +35,7 @@ const META: Record<BookingStatus, { label: string; cls: string }> = {
   for_review: { label: "Return review", cls: "bg-rose-100 text-rose-800 border-rose-200" },
   completed: { label: "Completed", cls: "bg-emerald-100 text-emerald-800 border-emerald-200" },
   cancelled: { label: "Cancelled", cls: "bg-rose-100 text-rose-800 border-rose-200" },
+  rejected: { label: "Declined by store", cls: "bg-rose-100 text-rose-800 border-rose-200" },
 };
 
 const StatusBadge = ({ status }: { status: string }) => {

@@ -463,19 +463,19 @@ const VendorProductForm = ({ mode }: { mode: "create" | "edit" }) => {
         dimensions: dimensions.trim() || null,
         specifications: specifications.trim() || null,
         sku,
-        publish_status: "published",
-        is_active: true,
       };
 
       if (mode === "create") {
         const { data, error } = await supabase
           .from("products")
-          .insert({ vendor_id: vendor.id, ...payload })
+          .insert({ vendor_id: vendor.id, ...payload, publish_status: "published", is_active: true })
           .select("id")
           .single();
         if (error) throw error;
         pid = data.id;
       } else {
+        // Edits must never change publish/archive state as a side effect —
+        // saving a typo fix on an archived product must not republish it.
         const { error } = await supabase.from("products").update(payload).eq("id", pid!);
         if (error) throw error;
       }

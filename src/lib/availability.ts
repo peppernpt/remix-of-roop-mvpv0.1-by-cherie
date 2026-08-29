@@ -126,6 +126,30 @@ export function rangesOverlap(a: DateRange, b: DateRange): boolean {
   );
 }
 
+/**
+ * Expand a CANDIDATE rental range with its own lifecycle (EMS ship-out days
+ * before the start; return day + cleaning after the last rental date).
+ *
+ * Overlap must be tested buffered-range vs buffered-range: the unit is one
+ * physical item, so a new booking's ship-out/return/cleaning days collide with
+ * an existing booking's rental days just as hard as the reverse. Checking only
+ * the raw rental dates lets a request slide in whose own buffers land inside
+ * an existing booking's window.
+ */
+export function candidateBlockedRange(
+  selectedStartDate: string | Date,
+  selectedEndDate: string | Date,
+  candidate?: { deliveryMethod?: string | null; province?: string | null },
+): DateRange {
+  return blockedRangeForBooking({
+    status: "candidate",
+    rental_start: selectedStartDate,
+    rental_end: selectedEndDate,
+    delivery_method: candidate?.deliveryMethod ?? null,
+    province: candidate?.province ?? null,
+  });
+}
+
 /** Blocked (buffered) ranges for one unit, from blocking-status bookings only. */
 export function getBlockedDateRangesForUnit(
   unitId: string,
@@ -147,6 +171,10 @@ export interface UnitAvailabilityArgs {
   bufferDaysAfter?: number;
   /** Optional: ignore a booking (e.g. the one being approved/edited). */
   ignoreBookingId?: string;
+  /** Delivery method of the booking BEING CHECKED — its own buffers block too. */
+  candidateDeliveryMethod?: string | null;
+  /** Delivery province of the booking being checked (EMS buffer sizing). */
+  candidateProvince?: string | null;
 }
 
 /** true = unit is free for the selected range. */
@@ -158,11 +186,15 @@ export function isUnitAvailableForDateRange({
   bufferDaysBefore = BUFFER_DAYS_BEFORE,
   bufferDaysAfter = BUFFER_DAYS_AFTER,
   ignoreBookingId,
+  candidateDeliveryMethod,
+  candidateProvince,
 }: UnitAvailabilityArgs): boolean {
-  const selected: DateRange = {
-    start: toDate(selectedStartDate),
-    end: toDate(selectedEndDate),
-  };
+  // The candidate occupies the unit for its whole lifecycle, not just the
+  // rental days — expand it exactly like an existing booking would be.
+  const selected = candidateBlockedRange(selectedStartDate, selectedEndDate, {
+    deliveryMethod: candidateDeliveryMethod,
+    province: candidateProvince,
+  });
   const bookings = ignoreBookingId
     ? (existingBookings ?? []).filter((b) => b.id !== ignoreBookingId)
     : existingBookings ?? [];
@@ -186,6 +218,8 @@ export interface ProductAvailabilityArgs {
   bufferDaysBefore?: number;
   bufferDaysAfter?: number;
   ignoreBookingId?: string;
+  candidateDeliveryMethod?: string | null;
+  candidateProvince?: string | null;
 }
 
 /** true when at least one unit of the product is free for the selected range. */
@@ -198,6 +232,8 @@ export function isProductAvailableForDateRange({
   bufferDaysBefore,
   bufferDaysAfter,
   ignoreBookingId,
+  candidateDeliveryMethod,
+  candidateProvince,
 }: ProductAvailabilityArgs): boolean {
   const units = (productUnits ?? []).filter(
     (u) => !u.product_id || u.product_id === productId,
@@ -211,6 +247,8 @@ export function isProductAvailableForDateRange({
       bufferDaysBefore,
       bufferDaysAfter,
       ignoreBookingId,
+      candidateDeliveryMethod,
+      candidateProvince,
     }),
   );
 }
@@ -232,6 +270,8 @@ export function findAvailableUnitForDateRange(
         bufferDaysBefore: args.bufferDaysBefore,
         bufferDaysAfter: args.bufferDaysAfter,
         ignoreBookingId: args.ignoreBookingId,
+        candidateDeliveryMethod: args.candidateDeliveryMethod,
+        candidateProvince: args.candidateProvince,
       }),
     ) ?? null
   );

@@ -25,6 +25,10 @@ export interface ApprovalCheckArgs {
   bookingId: string;
   rentalStart: string;
   rentalEnd: string;
+  /** Delivery method of the booking being approved — its own buffers count. */
+  deliveryMethod?: string | null;
+  /** Delivery province of the booking being approved (EMS buffer sizing). */
+  deliveryProvince?: string | null;
   items: ApprovalItem[];
 }
 
@@ -46,6 +50,8 @@ export async function checkApprovalAvailability({
   bookingId,
   rentalStart,
   rentalEnd,
+  deliveryMethod,
+  deliveryProvince,
   items,
 }: ApprovalCheckArgs): Promise<ApprovalCheckResult> {
   const productIds = [...new Set(items.map((i) => i.productId).filter(Boolean))];
@@ -76,7 +82,7 @@ export async function checkApprovalAvailability({
   if (bookingIds.length) {
     const { data: bookingRows, error: bErr } = await supabase
       .from("bookings")
-      .select("id, status, rental_start, rental_end, delivery_method")
+      .select("id, status, rental_start, rental_end, delivery_method, delivery_province")
       .in("id", bookingIds);
     if (bErr) throw bErr;
     existingBookings = (bookingRows ?? []).map((b) => ({
@@ -85,6 +91,7 @@ export async function checkApprovalAvailability({
       rental_start: b.rental_start,
       rental_end: b.rental_end,
       delivery_method: b.delivery_method,
+      province: (b as { delivery_province?: string | null }).delivery_province ?? null,
       product_unit_ids: (itemRows ?? [])
         .filter((r) => r.booking_id === b.id && r.product_unit_id)
         .map((r) => r.product_unit_id as string),
@@ -105,6 +112,8 @@ export async function checkApprovalAvailability({
         selectedEndDate: rentalEnd,
         existingBookings,
         ignoreBookingId: bookingId,
+        candidateDeliveryMethod: deliveryMethod,
+        candidateProvince: deliveryProvince,
       });
 
     if (item.productUnitId && free(item.productUnitId)) {
@@ -119,6 +128,8 @@ export async function checkApprovalAvailability({
       productUnits: productUnits.filter((u) => !claimed.has(u.id)),
       existingBookings,
       ignoreBookingId: bookingId,
+      candidateDeliveryMethod: deliveryMethod,
+      candidateProvince: deliveryProvince,
     });
 
     if (!alternative) {

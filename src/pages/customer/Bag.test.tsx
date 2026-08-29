@@ -4,6 +4,15 @@ import { MemoryRouter, Routes, Route } from "react-router-dom";
 import Bag from "./Bag";
 import * as bagStore from "@/lib/bag-store";
 
+// Dates must satisfy the submit-time re-validation: in the future, beyond the
+// delivery lead time, with `days` matching the actual inclusive day count.
+const iso = (d: Date) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const futureStart = new Date();
+futureStart.setDate(futureStart.getDate() + 10);
+const futureEnd = new Date(futureStart);
+futureEnd.setDate(futureEnd.getDate() + 2);
+
 const mockBagItems = [
   {
     id: "bag-item-1",
@@ -14,10 +23,10 @@ const mockBagItems = [
     vendorName: "Silk Boutique",
     size: "M",
     color: "Red",
-    startDate: "2026-08-01",
-    endDate: "2026-08-03",
+    startDate: iso(futureStart),
+    endDate: iso(futureEnd),
     days: 3,
-    deliveryMethod: "delivery",
+    deliveryMethod: "Messenger",
     province: "Bangkok",
     address: "123 Main St",
     rentalTotal: 3000,
@@ -124,9 +133,13 @@ describe("Bag Request Policy acknowledgement", () => {
           }),
           then: (resolve: any) => resolve({ data: [{ id: "unit-1" }], error: null }),
         };
+        const updateResult = Promise.resolve({ error: null });
         return {
           select: () => unitQuery,
-          update: () => ({ eq: () => ({ error: null }) }),
+          update: () => ({
+            eq: () => updateResult,
+            in: () => updateResult,
+          }),
         };
       }
       if (table === "bookings") {

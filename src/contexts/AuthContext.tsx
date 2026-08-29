@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useState, ReactNode } from "react
 import type { Session, User } from "@supabase/supabase-js";
 import { supabase } from "@/integrations/supabase/client";
 import { setActiveUser, clearCustomerScopedState } from "@/lib/user-scope";
+import { completePendingCustomerProfile } from "@/lib/pending-profile";
 
 
 interface AuthContextValue {
@@ -25,12 +26,19 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
   useEffect(() => {
     // Set up listener BEFORE fetching session
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => {
+    const { data: sub } = supabase.auth.onAuthStateChange((event, s) => {
       // Re-scope (and purge foreign) client-side customer state before any
       // component can render with the new identity.
       setActiveUser(s?.user?.id ?? null);
       setSession(s);
       setUser(s?.user ?? null);
+      // First authenticated session after an email-confirmation signup:
+      // apply the address/contact details stashed during signup.
+      if (event === "SIGNED_IN" && s?.user) {
+        setTimeout(() => {
+          completePendingCustomerProfile(s.user).catch(() => {});
+        }, 0);
+      }
     });
 
     supabase.auth.getSession().then(({ data: { session: s } }) => {

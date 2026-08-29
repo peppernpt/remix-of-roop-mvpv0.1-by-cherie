@@ -7,6 +7,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import StatusBadge from "@/components/customer/StatusBadge";
+import StatusTimeline from "@/components/customer/StatusTimeline";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
 import {
@@ -237,6 +238,7 @@ const CustomerOrderDetailDialog = ({
               <p className="text-muted-foreground">
                 {STATUS_HELPER[booking.status] ?? "Order in progress."}
               </p>
+              <StatusTimeline status={booking.status} />
             </Section>
 
             <Section title="Store information">

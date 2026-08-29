@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import type { VendorBooking } from "@/components/vendor/OrderDetailDialog";
-import { onBookingsChanged } from "@/lib/sync";
+import { onBookingsChanged, startBookingsRealtime } from "@/lib/sync";
 
 export const useVendorBookings = (vendorId: string | undefined) => {
   const [bookings, setBookings] = useState<VendorBooking[]>([]);
@@ -130,7 +130,13 @@ export const useVendorBookings = (vendorId: string | undefined) => {
 
   useEffect(() => {
     if (!vendorId) return;
-    return onBookingsChanged(() => refresh());
+    const offBus = onBookingsChanged(() => refresh());
+    // New requests / payment submissions arrive live when realtime is enabled.
+    const offLive = startBookingsRealtime(`vendor-${vendorId}`, `vendor_id=eq.${vendorId}`);
+    return () => {
+      offBus();
+      offLive();
+    };
   }, [vendorId, refresh]);
 
   const replaceBooking = useCallback((b: VendorBooking) => {
