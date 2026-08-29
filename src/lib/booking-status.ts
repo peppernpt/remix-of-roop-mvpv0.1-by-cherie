@@ -26,6 +26,7 @@ export const BOOKING_STATUSES: BookingStatus[] = [
   "for_review",
   "completed",
   "cancelled",
+  "rejected",
 ];
 
 // Vendor-facing label for each booking status. Each status shows its precise
@@ -101,6 +102,7 @@ export const unitStatusForBooking = (s: BookingStatus): string | null => {
     case "completed":
       return null;
     case "cancelled":
+    case "rejected":
       return "available";
     default:
       return null;
@@ -113,7 +115,7 @@ export const nextActions = (s: BookingStatus): Array<{ to: BookingStatus; label:
     case "pending_vendor_review":
       return [
         { to: "approved_waiting_payment", label: "Approve Order", tone: "primary" },
-        { to: "cancelled", label: "Reject Order", tone: "destructive" },
+        { to: "rejected", label: "Reject Order", tone: "destructive" },
       ];
     case "approved_waiting_payment":
       // Awaiting customer payment — vendor may still cancel the request
@@ -129,9 +131,18 @@ export const nextActions = (s: BookingStatus): Array<{ to: BookingStatus; label:
       ];
     case "paid":
       // Legacy rows that were confirmed before the direct transition existed.
-      return [{ to: "to_deliver", label: "Move to To Deliver", tone: "primary" }];
+      return [
+        { to: "to_deliver", label: "Move to To Deliver", tone: "primary" },
+        { to: "cancelled", label: "Cancel Order", tone: "destructive" },
+      ];
     case "to_deliver":
-      return [{ to: "on_delivery", label: "Move to On Delivery", tone: "primary" }];
+      // The item hasn't left the store yet — the vendor can still cancel
+      // (e.g. item damaged before shipping, customer unreachable). Any refund
+      // is settled outside the platform and should be noted in the reason.
+      return [
+        { to: "on_delivery", label: "Move to On Delivery", tone: "primary" },
+        { to: "cancelled", label: "Cancel Order", tone: "destructive" },
+      ];
     case "on_delivery":
       return [{ to: "on_rent", label: "Move to On Rent", tone: "primary" }];
     case "on_rent":
@@ -143,7 +154,8 @@ export const nextActions = (s: BookingStatus): Array<{ to: BookingStatus; label:
   }
 };
 
-export const isTerminal = (s: BookingStatus) => s === "completed" || s === "cancelled";
+export const isTerminal = (s: BookingStatus) =>
+  s === "completed" || s === "cancelled" || s === "rejected";
 
 // Single source of truth for the vendor's primary "next step" button.
 // Used by Dashboard, Transactions and Inventory order modals.

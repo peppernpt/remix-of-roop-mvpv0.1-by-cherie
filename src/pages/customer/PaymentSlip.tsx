@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, Upload, FileImage, Loader2, CheckCircle2 } from "lucide-react";
+import { ArrowLeft, Upload, FileImage, Loader2, CheckCircle2, Copy, Landmark } from "lucide-react";
 import CustomerLayout from "@/components/customer/CustomerLayout";
 import { Button } from "@/components/ui/button";
 import StatusBadge from "@/components/customer/StatusBadge";
@@ -45,6 +45,11 @@ const PaymentSlip = () => {
   const [submitting, setSubmitting] = useState(false);
   const [redirecting, setRedirecting] = useState(false);
   const [showSuccess, setShowSuccess] = useState(false);
+  const [payDest, setPayDest] = useState<{
+    bankAccount: string | null;
+    lineId: string | null;
+    storeName: string | null;
+  } | null>(null);
 
   const load = async () => {
     if (!id || !user) return;
@@ -61,7 +66,11 @@ const PaymentSlip = () => {
       return;
     }
     const [{ data: vendor }, { data: items }] = await Promise.all([
-      supabase.from("vendors").select("store_name").eq("id", b.vendor_id).maybeSingle(),
+      supabase
+        .from("vendors")
+        .select("store_name, bank_account, line_id")
+        .eq("id", b.vendor_id)
+        .maybeSingle(),
       supabase
         .from("booking_items")
         .select("id, rental_price, deposit_amount, product_id, products:product_id(name, product_images(image_url, display_order))")
@@ -93,6 +102,23 @@ const PaymentSlip = () => {
         };
       }),
     });
+    // Where to send the money. Post-hardening the bank account comes from the
+    // scoped RPC; older databases still allow the direct read used above.
+    const v = vendor as { store_name?: string; bank_account?: string | null; line_id?: string | null } | null;
+    let bank = v?.bank_account ?? null;
+    if (!bank) {
+      const { data: dest } = await supabase.rpc(
+        "get_payment_destination" as never,
+        { _booking_id: b.id } as never,
+      );
+      const row = Array.isArray(dest) ? (dest as any[])[0] : (dest as any);
+      if (row?.bank_account) bank = row.bank_account as string;
+    }
+    setPayDest({
+      bankAccount: bank,
+      lineId: v?.line_id ?? null,
+      storeName: v?.store_name ?? null,
+    });
     setLoading(false);
   };
 
@@ -122,12 +148,40 @@ const PaymentSlip = () => {
     return () => URL.revokeObjectURL(url);
   }, [file]);
 
+  const SLIP_MAX_BYTES = 10 * 1024 * 1024;
+  const SLIP_TYPES = ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"];
+
+  const pickFile = (f: File | null) => {
+    if (!f) {
+      setFile(null);
+      return;
+    }
+    if (!SLIP_TYPES.includes(f.type)) {
+      toast({
+        title: "That file isn't a supported image",
+        description: "Upload your slip as a JPG, PNG, WebP or HEIC photo.",
+        variant: "destructive",
+      });
+      return;
+    }
+    if (f.size > SLIP_MAX_BYTES) {
+      toast({
+        title: "Image is too large",
+        description: "Slips must be under 10 MB. Most banking-app screenshots are well below this.",
+        variant: "destructive",
+      });
+      return;
+    }
+    setFile(f);
+  };
+
   const onSubmit = async () => {
     if (!file || !booking || !user || submitting) return;
     setSubmitting(true);
     try {
-      const ext = file.name.split(".").pop() || "jpg";
-      const path = `${user.id}/${booking.id}/slip-${Date.now()}.${ext}`;
+      // Fixed path per booking: re-uploads REPLACE the previous slip instead of
+      // stranding old bank-detail images in storage forever.
+      const path = `${user.id}/${booking.id}/slip`;
       const { data: uploadData, error: upErr } = await supabase.storage
         .from("payment-slips")
         .upload(path, file, { upsert: true, contentType: file.type });
@@ -143,11 +197,14 @@ const PaymentSlip = () => {
         })
         .eq("id", booking.id)
         .eq("customer_id", user.id)
+        .in("status", ["approved_waiting_payment", "payment_submitted"])
         .select("payment_slip_url, payment_submitted_at, status")
         .maybeSingle();
       if (updErr) throw updErr;
       if (!updatedBooking?.payment_slip_url || updatedBooking.status !== "payment_submitted") {
-        throw new Error("Payment slip was not saved to the booking.");
+        throw new Error(
+          "This order is no longer waiting for payment \u2014 it may have been updated by the store. Pull to refresh and check its status.",
+        );
       }
       setBooking({
         ...booking,
@@ -263,11 +320,43 @@ const PaymentSlip = () => {
           </Section>
 
 
-          <Section title="Payment Instructions">
-            <div className="rounded-xl bg-muted/50 border border-border p-4 text-sm">
-              <p className="font-medium">{booking.vendor?.store_name ?? "Vendor"}</p>
-              <p className="text-muted-foreground mt-1">
-                Vendor will share payment instructions via chat. Transfer the grand total above and upload your slip below.
+          <Section title="How to Pay">
+            <div className="rounded-xl bg-muted/50 border border-border p-4 text-sm space-y-2.5">
+              <p className="font-medium flex items-center gap-1.5">
+                <Landmark className="w-4 h-4" />
+                {payDest?.storeName ?? booking.vendor?.store_name ?? "Vendor"}
+              </p>
+              {payDest?.bankAccount ? (
+                <div className="flex items-center justify-between gap-2 rounded-lg bg-background border border-border px-3 py-2">
+                  <div className="min-w-0">
+                    <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                      Transfer to
+                    </p>
+                    <p className="font-mono text-sm break-all">{payDest.bankAccount}</p>
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      navigator.clipboard?.writeText(payDest.bankAccount ?? "").then(
+                        () => toast({ title: "Account details copied" }),
+                        () => toast({ title: "Couldn't copy \u2014 long-press to copy manually" }),
+                      );
+                    }}
+                  >
+                    <Copy className="w-3.5 h-3.5" /> Copy
+                  </Button>
+                </div>
+              ) : (
+                <p className="text-muted-foreground">
+                  The store will confirm its transfer details
+                  {payDest?.lineId ? ` via LINE (${payDest.lineId})` : " via chat"}.
+                </p>
+              )}
+              <p className="text-muted-foreground">
+                Transfer exactly <span className="font-semibold text-foreground">{fmtTHB(booking.grand_total)}</span>,
+                then upload your transfer slip below so the store can confirm it.
               </p>
             </div>
           </Section>
@@ -277,7 +366,11 @@ const PaymentSlip = () => {
           <Section title="Upload Payment Slip">
             {!canUpload ? (
               <p className="text-sm text-muted-foreground">
-                You can upload the slip once the vendor has approved your order and set the delivery fee.
+                {booking.status === "pending_vendor_review"
+                  ? "You can upload the slip once the store has approved your request and set the delivery fee."
+                  : ["cancelled", "rejected"].includes(booking.status)
+                    ? "This order is closed, so no payment is needed."
+                    : "Payment for this order has already been confirmed \u2014 no further upload is needed."}
               </p>
             ) : (
               <div className="space-y-3">
@@ -303,7 +396,7 @@ const PaymentSlip = () => {
                     type="file"
                     accept="image/*"
                     className="hidden"
-                    onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+                    onChange={(e) => pickFile(e.target.files?.[0] ?? null)}
                   />
                 </label>
 

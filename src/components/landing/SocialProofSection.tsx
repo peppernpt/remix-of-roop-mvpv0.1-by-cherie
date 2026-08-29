@@ -63,9 +63,9 @@ const SocialProofSection = ({ role }: { role: Role }) => {
 
                 {/* Vendor logos placeholder */}
                 <div className="flex flex-wrap justify-center gap-6 mb-16">
-                  {vendorLogos.map((name) => (
+                  {vendorLogos.map((name, i) => (
                     <div
-                      key={name}
+                      key={i}
                       className="px-6 py-3 rounded-lg bg-muted text-sm font-medium text-muted-foreground"
                     >
                       {name}

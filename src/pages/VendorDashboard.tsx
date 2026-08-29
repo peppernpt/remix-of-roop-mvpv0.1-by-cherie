@@ -79,10 +79,12 @@ const VendorDashboard = () => {
   }, [user]);
 
   const stats = useMemo(() => {
-    // Revenue counts only completed bookings (money truly earned)
+    // Revenue counts only completed bookings (money truly earned).
+    // Rental earnings only: honour any vendor discount, and keep the delivery
+    // fee out — it is a pass-through cost, not rental revenue.
     const completedBookings = bookings.filter((b) => b.status === "completed");
     const totalRevenue = completedBookings.reduce(
-      (sum, b) => sum + b.rentalTotal + b.deliveryFee,
+      (sum, b) => sum + (b.discountedRentalTotal ?? b.rentalTotal),
       0,
     );
     // Active rentals = strictly bookings.status in fulfilment lifecycle
@@ -110,7 +112,7 @@ const VendorDashboard = () => {
             You're signed in but don't have a vendor profile yet.
           </p>
           <Button asChild className="mt-4">
-            <Link to="/vendor/signup">Set up your store</Link>
+            <Link to="/vendor/setup">Set up your store</Link>
           </Button>
         </div>
       </div>

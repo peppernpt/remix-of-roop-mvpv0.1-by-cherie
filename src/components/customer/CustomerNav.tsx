@@ -56,26 +56,48 @@ const CustomerNav = () => {
         </button>
       </div>
 
-      {/* Mobile bottom nav */}
-      <nav className="md:hidden border-t border-border bg-background flex items-center justify-around h-14">
-        {items.map(({ to, label, icon: Icon }) => (
-          <NavLink
-            key={to}
-            to={to}
-            className={({ isActive }) =>
-              cn(
-                "flex flex-col items-center justify-center gap-0.5 flex-1 h-full text-[10px]",
-                isActive ? "text-foreground" : "text-muted-foreground"
-              )
-            }
-          >
-            <Icon className="w-4 h-4" />
-            {label}
-          </NavLink>
-        ))}
-      </nav>
     </header>
   );
 };
+
+/**
+ * Thumb-reachable bottom tab bar on mobile. Fixed to the viewport bottom
+ * (with safe-area padding for gesture-nav phones) instead of a second header
+ * row. Pair with `pb-20 md:pb-0` on the page container.
+ */
+export const CustomerBottomNav = () => (
+  <nav
+    className="md:hidden fixed bottom-0 inset-x-0 z-40 border-t border-border bg-background/95 backdrop-blur-xl flex items-stretch justify-around"
+    style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
+    aria-label="Primary"
+  >
+    {items.map(({ to, label, icon: Icon }) => (
+      <NavLink
+        key={to}
+        to={to}
+        className={({ isActive }) =>
+          cn(
+            "flex flex-col items-center justify-center gap-0.5 flex-1 h-14 text-[10px] font-medium",
+            isActive ? "text-foreground" : "text-muted-foreground"
+          )
+        }
+      >
+        {({ isActive }) => (
+          <>
+            <span
+              className={cn(
+                "flex items-center justify-center w-9 h-6 rounded-full transition-colors",
+                isActive && "bg-foreground text-background"
+              )}
+            >
+              <Icon className="w-4 h-4" />
+            </span>
+            {label}
+          </>
+        )}
+      </NavLink>
+    ))}
+  </nav>
+);
 
 export default CustomerNav;

@@ -14,7 +14,7 @@ export default {
     },
     extend: {
       fontFamily: {
-        sans: ['"Public Sans"', 'system-ui', '-apple-system', 'sans-serif'],
+        sans: ['"Public Sans"', '"Noto Sans Thai"', 'system-ui', '-apple-system', 'sans-serif'],
       },
       colors: {
         border: "hsl(var(--border))",

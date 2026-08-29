@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
-import { onBookingsChanged } from "@/lib/sync";
+import { onBookingsChanged, startBookingsRealtime } from "@/lib/sync";
 import { formatReturnAddress } from "@/lib/return-address";
 
 export interface CustomerBookingRow {
@@ -35,6 +35,9 @@ const ACTIVE_STATUSES = new Set([
   "on_delivery",
   "on_rent",
   "on_return",
+  // Return inspection: the vendor still holds the deposit — the order must
+  // stay visible to the customer until it completes.
+  "for_review",
 ]);
 
 export const isActive = (s: string) => ACTIVE_STATUSES.has(s);
@@ -150,17 +153,14 @@ export const useCustomerBookings = () => {
 
   useEffect(() => {
     if (!user) return;
+    // The sync bus already refetches on focus/visibility — registering our own
+    // duplicates here caused multiplied refetch storms.
     const offBus = onBookingsChanged(() => fetchBookings());
-    const onFocus = () => fetchBookings();
-    const onVisible = () => {
-      if (document.visibilityState === "visible") fetchBookings();
-    };
-    window.addEventListener("focus", onFocus);
-    document.addEventListener("visibilitychange", onVisible);
+    // Live updates (approval, payment confirmation…) when realtime is enabled.
+    const offLive = startBookingsRealtime(`customer-${user.id}`, `customer_id=eq.${user.id}`);
     return () => {
       offBus();
-      window.removeEventListener("focus", onFocus);
-      document.removeEventListener("visibilitychange", onVisible);
+      offLive();
     };
   }, [user, fetchBookings]);
 

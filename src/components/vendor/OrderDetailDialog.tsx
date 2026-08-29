@@ -26,6 +26,7 @@ import {
 } from "@/components/ui/select";
 import { Mail, Phone, MapPin, Calendar, Package2, ArrowLeft, MessageCircle, Instagram } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
+import type { Database } from "@/integrations/supabase/types";
 import { toast } from "@/hooks/use-toast";
 import {
   type BookingStatus,
@@ -110,6 +111,9 @@ export interface VendorBooking {
   deliveryAddress?: string | null;
   deliveryProvince?: string | null;
   deliveryTrackingUrl?: string | null;
+  depositRefundAmount?: number | null;
+  depositRefundedAt?: string | null;
+  depositRefundNote?: string | null;
   returnPolicyAcknowledged?: boolean;
   returnPolicyAcknowledgedAt?: string | null;
   storePolicyAcknowledged?: boolean;
@@ -126,6 +130,12 @@ const fmtDate = (d: string) =>
 
 const dayDiff = (a: string, b: string) =>
   Math.max(1, calculateRentalDays(a, b));
+
+type BookingUpdate = Database["public"]["Tables"]["bookings"]["Update"];
+
+/** Stale-tab guard: every status write must state the status it moves FROM. */
+const STALE_STATUS_MESSAGE =
+  "This order changed in another tab or by the customer. The page has been refreshed \u2014 please review the new status.";
 
 interface Props {
   booking: VendorBooking | null;
@@ -171,9 +181,7 @@ const OrderDetailDialog = ({ booking: bookingProp, open, onClose, onUpdated }: P
     (async () => {
       const { data } = await supabase
         .from("bookings")
-        .select(
-          "id, status, delivery_address, delivery_province, delivery_method, promo_code, discounted_rental_total, delivery_fee, rental_total, deposit_total, grand_total, payment_slip_url, payment_submitted_at, delivery_tracking_url, notes, return_policy_acknowledged, return_policy_acknowledged_at, store_policy_acknowledged, store_policy_acknowledged_at",
-        )
+        .select("*")
         .eq("id", bookingId)
         .maybeSingle();
       if (!alive) return;
@@ -193,6 +201,12 @@ const OrderDetailDialog = ({ booking: bookingProp, open, onClose, onUpdated }: P
           paymentSlipUrl: data.payment_slip_url ?? null,
           paymentSubmittedAt: data.payment_submitted_at ?? null,
           deliveryTrackingUrl: data.delivery_tracking_url ?? null,
+          depositRefundAmount:
+            (data as any).deposit_refund_amount == null
+              ? null
+              : Number((data as any).deposit_refund_amount),
+          depositRefundedAt: (data as any).deposit_refunded_at ?? null,
+          depositRefundNote: (data as any).deposit_refund_note ?? null,
           notes: data.notes ?? null,
           returnPolicyAcknowledged: !!(data as any).return_policy_acknowledged,
           returnPolicyAcknowledgedAt: (data as any).return_policy_acknowledged_at ?? null,
@@ -244,8 +258,12 @@ const OrderDetailDialog = ({ booking: bookingProp, open, onClose, onUpdated }: P
   const status = booking?.status as BookingStatus | undefined;
   const actions = useMemo(() => (status ? nextActions(status) : []), [status]);
   const [confirm, setConfirm] = useState<
-    { to: BookingStatus; label: string; kind: "forward" | "back" } | null
+    { to: BookingStatus; label: string; kind: "forward" | "back" | "destructive" } | null
   >(null);
+  const [cancelReason, setCancelReason] = useState("");
+  const [refundAmount, setRefundAmount] = useState("");
+  const [refundNote, setRefundNote] = useState("");
+  const [savingRefund, setSavingRefund] = useState(false);
 
   // Physical-unit gating: a later booking may not enter fulfilment while an
   // earlier booking still physically holds the same unit.
@@ -289,6 +307,10 @@ const OrderDetailDialog = ({ booking: bookingProp, open, onClose, onUpdated }: P
 
   const duration = dayDiff(booking.rentalStart, booking.rentalEnd);
   const paymentSlipRef = (fresh?.paymentSlipUrl ?? "")?.trim() ?? "";
+
+  // Money fields (delivery fee, discount) freeze once the customer has
+  // submitted payment: the amount they paid must not drift afterwards.
+  const moneyLocked = !["pending_vendor_review", "approved_waiting_payment"].includes(status);
 
   const saveTrackingUrl = async () => {
     const trimmed = trackingUrl.trim();
@@ -378,7 +400,7 @@ const OrderDetailDialog = ({ booking: bookingProp, open, onClose, onUpdated }: P
 
 
 
-  const transitionTo = async (next: BookingStatus) => {
+  const transitionTo = async (next: BookingStatus, reason?: string) => {
     // Hard gate: never let a later booking enter physical fulfilment while an
     // earlier booking still holds the same unit (re-checked live at click time).
     if (isPhysicalFulfilmentStatus(next) && !isPhysicalFulfilmentStatus(status)) {
@@ -403,11 +425,30 @@ const OrderDetailDialog = ({ booking: bookingProp, open, onClose, onUpdated }: P
       // Vendor approval: re-check date availability before accepting a pending
       // request, so two overlapping requests can never both be approved.
       let approvedItems = booking.items;
+      let feePatch: Pick<BookingUpdate, "delivery_fee" | "grand_total"> | null = null;
       if (next === "approved_waiting_payment" && booking.status === "pending_vendor_review") {
+        // Save the delivery fee as part of approval (0 = free delivery / pickup).
+        const fee = Number(deliveryFee);
+        if (deliveryFee.trim() === "" || Number.isNaN(fee) || fee < 0) {
+          toast({
+            title: "Delivery fee required",
+            description:
+              "Enter the delivery fee before approving \u2014 0 is fine for free delivery or self-pickup.",
+            variant: "destructive",
+          });
+          setTransitioning(null);
+          return;
+        }
+        if (fee !== booking.deliveryFee) {
+          const rentalPart = booking.discountedRentalTotal ?? booking.rentalTotal;
+          feePatch = { delivery_fee: fee, grand_total: rentalPart + booking.depositTotal + fee };
+        }
         const check = await checkApprovalAvailability({
           bookingId: booking.id,
           rentalStart: booking.rentalStart,
           rentalEnd: booking.rentalEnd,
+          deliveryMethod: booking.deliveryMethod ?? null,
+          deliveryProvince: booking.deliveryProvince ?? null,
           items: booking.items.map((it) => ({
             id: it.id,
             productId: it.productId,
@@ -440,7 +481,7 @@ const OrderDetailDialog = ({ booking: bookingProp, open, onClose, onUpdated }: P
       }
 
       // Update booking status (and payment timestamp where relevant)
-      const bookingPatch: Record<string, any> = { status: next };
+      const bookingPatch: BookingUpdate = { status: next, ...(feePatch ?? {}) };
       if (next === "paid" || (next === "to_deliver" && booking.status === "payment_submitted")) {
         bookingPatch.payment_confirmed_at = new Date().toISOString();
       }
@@ -450,18 +491,34 @@ const OrderDetailDialog = ({ booking: bookingProp, open, onClose, onUpdated }: P
         bookingPatch.payment_slip_url = null;
         bookingPatch.payment_submitted_at = null;
       }
-      const { error: bErr } = await supabase
+      // Cancellation / rejection reason lives in the shared notes trail so both
+      // sides can see it.
+      if ((next === "cancelled" || next === "rejected") && reason?.trim()) {
+        const label = next === "rejected" ? "Rejection reason" : "Cancellation reason";
+        bookingPatch.notes = `${booking.notes ? `${booking.notes}\n` : ""}[${label}] ${reason.trim()}`;
+      }
+      // Compare-and-swap on the current status: a stale tab (order already
+      // cancelled / advanced elsewhere) must never overwrite the newer state.
+      const { data: updatedRows, error: bErr } = await supabase
         .from("bookings")
         .update(bookingPatch)
-        .eq("id", booking.id);
+        .eq("id", booking.id)
+        .eq("status", booking.status)
+        .select("id");
       if (bErr) throw bErr;
+      if (!updatedRows?.length) {
+        toast({ title: "Order already changed", description: STALE_STATUS_MESSAGE, variant: "destructive" });
+        emitBookingsChanged();
+        onClose();
+        return;
+      }
 
 
       // Sync product_units status if the rental physically moved.
       // Booking-only states (approved_waiting_payment, payment_submitted, paid) keep units "reserved".
       const unitStatus = unitStatusForBooking(next);
       const unitIds = approvedItems.map((i) => i.productUnitId).filter(Boolean) as string[];
-      if (next === "cancelled") {
+      if (next === "cancelled" || next === "rejected") {
         // Cancellation / rejection: release units only when no other active
         // booking still holds them (booking_items are kept for history).
         await releaseUnitsForCancelledBooking({ bookingId: booking.id, unitIds });
@@ -475,6 +532,11 @@ const OrderDetailDialog = ({ booking: bookingProp, open, onClose, onUpdated }: P
 
       toast({ title: `Order ${STATUS_LABELS[next]}` });
       const patched: VendorBooking = { ...booking, status: next, items: approvedItems };
+      if (feePatch) {
+        patched.deliveryFee = feePatch.delivery_fee as number;
+        patched.grandTotal = feePatch.grand_total as number;
+      }
+      if (bookingPatch.notes) patched.notes = bookingPatch.notes;
       if (bookingPatch.payment_slip_url === null) {
         patched.paymentSlipUrl = null;
         patched.paymentSubmittedAt = null;
@@ -528,11 +590,14 @@ const OrderDetailDialog = ({ booking: bookingProp, open, onClose, onUpdated }: P
 
       // Only the final inspection/republish action completes the booking.
       if (booking.status !== "completed") {
-        const { error: bErr } = await supabase
+        const { data: doneRows, error: bErr } = await supabase
           .from("bookings")
           .update({ status: "completed" })
-          .eq("id", booking.id);
+          .eq("id", booking.id)
+          .eq("status", booking.status)
+          .select("id");
         if (bErr) throw bErr;
+        if (!doneRows?.length) throw new Error(STALE_STATUS_MESSAGE);
       }
 
       toast({
@@ -564,6 +629,47 @@ const OrderDetailDialog = ({ booking: bookingProp, open, onClose, onUpdated }: P
     } finally {
       setRepublishing(false);
     }
+  };
+
+  const recordDepositRefund = async () => {
+    const amount = refundAmount.trim() === "" ? booking.depositTotal : Number(refundAmount);
+    if (Number.isNaN(amount) || amount < 0 || amount > booking.depositTotal) {
+      toast({
+        title: "Invalid refund amount",
+        description: `Enter an amount between 0 and ${fmtTHB(booking.depositTotal)}.`,
+        variant: "destructive",
+      });
+      return;
+    }
+    setSavingRefund(true);
+    const { error } = await supabase
+      .from("bookings")
+      .update({
+        deposit_refund_amount: amount,
+        deposit_refunded_at: new Date().toISOString(),
+        deposit_refund_note: refundNote.trim() || null,
+      } as BookingUpdate)
+      .eq("id", booking.id);
+    setSavingRefund(false);
+    if (error) {
+      const missingColumn = /deposit_refund/.test(error.message ?? "");
+      toast({
+        title: "Couldn't record deposit refund",
+        description: missingColumn
+          ? "Your database is missing the deposit-refund columns. Apply the latest ROOP migration and try again."
+          : error.message,
+        variant: "destructive",
+      });
+      return;
+    }
+    toast({ title: "Deposit refund recorded", description: fmtTHB(amount) });
+    applyUpdate({
+      ...booking,
+      depositRefundAmount: amount,
+      depositRefundedAt: new Date().toISOString(),
+      depositRefundNote: refundNote.trim() || null,
+    });
+    emitBookingsChanged();
   };
 
   const addr = booking.address;
@@ -809,24 +915,25 @@ const OrderDetailDialog = ({ booking: bookingProp, open, onClose, onUpdated }: P
                   onKeyDown={(e) => {
                     if (e.key === "-" || e.key === "e" || e.key === "+") e.preventDefault();
                   }}
-                  disabled={["completed", "cancelled"].includes(status)}
+                  disabled={moneyLocked}
                 />
               </div>
               <Button
                 onClick={updateDeliveryFee}
-                disabled={savingFee || ["completed", "cancelled"].includes(status) || !(Number(deliveryFee) > 0)}
+                disabled={savingFee || moneyLocked || deliveryFee.trim() === "" || Number.isNaN(Number(deliveryFee))}
                 variant="outline"
               >
                 {savingFee ? "Saving…" : "Update Fee"}
               </Button>
             </div>
-            {status === "pending_vendor_review" && !(Number(deliveryFee) > 0) ? (
-              <p className="text-[11px] text-destructive mt-1.5">
-                Please enter delivery fee before approving
+            {moneyLocked ? (
+              <p className="text-[11px] text-muted-foreground mt-1.5">
+                Locked \u2014 the customer has already been quoted this total.
               </p>
             ) : (
               <p className="text-[11px] text-muted-foreground mt-1.5">
-                Confirm with the customer before approving. Updates the grand total.
+                Confirm with the customer before approving. Enter 0 for free delivery or self-pickup.
+                Saved automatically when you approve.
               </p>
             )}
           </Section>
@@ -861,12 +968,12 @@ const OrderDetailDialog = ({ booking: bookingProp, open, onClose, onUpdated }: P
                       onKeyDown={(e) => {
                         if (e.key === "-" || e.key === "e" || e.key === "+") e.preventDefault();
                       }}
-                      disabled={["completed", "cancelled"].includes(status)}
+                      disabled={moneyLocked}
                     />
                   </div>
                   <Button
                     onClick={saveDiscountedPrice}
-                    disabled={savingDiscount || ["completed", "cancelled"].includes(status)}
+                    disabled={savingDiscount || moneyLocked}
                     variant="outline"
                   >
                     {savingDiscount ? "Saving…" : "Save Discount"}
@@ -912,6 +1019,57 @@ const OrderDetailDialog = ({ booking: bookingProp, open, onClose, onUpdated }: P
               </div>
             </div>
           </Section>
+
+          {["for_review", "completed"].includes(status) && booking.depositTotal > 0 && (
+            <Section title="Deposit Settlement">
+              {booking.depositRefundedAt ? (
+                <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-sm text-emerald-800">
+                  <p className="font-medium">
+                    Deposit refunded: {fmtTHB(booking.depositRefundAmount ?? 0)}
+                    {(booking.depositRefundAmount ?? 0) < booking.depositTotal
+                      ? ` of ${fmtTHB(booking.depositTotal)}`
+                      : ""}
+                  </p>
+                  <p className="text-xs mt-0.5">
+                    {new Date(booking.depositRefundedAt).toLocaleString("en-GB")}
+                    {booking.depositRefundNote ? ` — ${booking.depositRefundNote}` : ""}
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <p className="text-xs text-muted-foreground">
+                    The customer paid a {fmtTHB(booking.depositTotal)} refundable deposit. Record the
+                    refund here after inspection — deduct for damage and note the reason.
+                  </p>
+                  <div className="flex items-end gap-2">
+                    <div className="flex-1">
+                      <Label className="text-xs text-muted-foreground">Refund amount (THB)</Label>
+                      <Input
+                        type="number"
+                        min={0}
+                        step="1"
+                        inputMode="numeric"
+                        placeholder={String(booking.depositTotal)}
+                        value={refundAmount}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          if (v === "" || (/^\d*\.?\d*$/.test(v) && Number(v) >= 0)) setRefundAmount(v);
+                        }}
+                      />
+                    </div>
+                    <Button onClick={recordDepositRefund} disabled={savingRefund} variant="outline">
+                      {savingRefund ? "Saving…" : "Record Refund"}
+                    </Button>
+                  </div>
+                  <Input
+                    placeholder="Note (e.g. \u201cfull refund via bank transfer\u201d or deduction reason)"
+                    value={refundNote}
+                    onChange={(e) => setRefundNote(e.target.value)}
+                  />
+                </div>
+              )}
+            </Section>
+          )}
 
           {!["cancelled", "rejected"].includes(status) && (
             <Section title="Delivery Tracking">
@@ -1040,7 +1198,8 @@ const OrderDetailDialog = ({ booking: bookingProp, open, onClose, onUpdated }: P
 
               const isApprove =
                 status === "pending_vendor_review" && a.tone !== "destructive";
-              const blockApprove = isApprove && !(booking.deliveryFee > 0);
+              const blockApprove =
+                isApprove && (deliveryFee.trim() === "" || Number.isNaN(Number(deliveryFee)) || Number(deliveryFee) < 0);
               const isAcceptPayment =
                 status === "payment_submitted" && a.tone !== "destructive";
               const blockAccept = isAcceptPayment && !paymentSlipRef;
@@ -1051,7 +1210,7 @@ const OrderDetailDialog = ({ booking: bookingProp, open, onClose, onUpdated }: P
                 isPhysicalFulfilmentStatus(a.to) &&
                 !!occupancy?.blocked;
               const disabledTitle = blockApprove
-                ? "Enter and save a delivery fee first"
+                ? "Enter a delivery fee first (0 = free delivery)"
                 : blockAccept
                   ? "Customer hasn't uploaded a payment slip yet"
                   : blockOccupied
@@ -1060,11 +1219,16 @@ const OrderDetailDialog = ({ booking: bookingProp, open, onClose, onUpdated }: P
               return (
                 <Button
                   key={a.to}
-                  onClick={() =>
-                    requiresForwardConfirmation(status, a.to)
-                      ? setConfirm({ to: a.to, label: a.label, kind: "forward" })
-                      : transitionTo(a.to)
-                  }
+                  onClick={() => {
+                    if (a.tone === "destructive") {
+                      setCancelReason("");
+                      setConfirm({ to: a.to, label: a.label, kind: "destructive" });
+                    } else if (requiresForwardConfirmation(status, a.to)) {
+                      setConfirm({ to: a.to, label: a.label, kind: "forward" });
+                    } else {
+                      transitionTo(a.to);
+                    }
+                  }}
                   disabled={transitioning !== null || blockApprove || blockAccept || blockOccupied}
                   variant={a.tone === "destructive" ? "destructive" : "default"}
                   title={disabledTitle}
@@ -1081,23 +1245,48 @@ const OrderDetailDialog = ({ booking: bookingProp, open, onClose, onUpdated }: P
                 <AlertDialogTitle>
                   {confirm?.kind === "back"
                     ? `Move this order back to ${stageLabel(confirm.to, confirm.to === "completed")}?`
-                    : confirm
-                      ? `Move this order to ${stageLabel(confirm.to, confirm.to === "completed")}?`
-                      : ""}
+                    : confirm?.kind === "destructive"
+                      ? `${confirm.label}?`
+                      : confirm
+                        ? `Move this order to ${stageLabel(confirm.to, confirm.to === "completed")}?`
+                        : ""}
                 </AlertDialogTitle>
                 <AlertDialogDescription>
                   {confirm?.kind === "back"
                     ? "This corrects an accidental status change. Rental dates stay blocked and the assigned items move back with the order."
-                    : "The assigned items move to the next stage together with this order."}
+                    : confirm?.kind === "destructive"
+                      ? confirm.to === "rejected"
+                        ? "The customer's request is declined and the item's dates are released. The reason is shown to the customer."
+                        : "This releases the item's dates. If the customer has already paid, settle any refund with them directly and note it below."
+                      : "The assigned items move to the next stage together with this order."}
                 </AlertDialogDescription>
               </AlertDialogHeader>
+              {confirm?.kind === "destructive" && (
+                <div className="px-1">
+                  <Label className="text-xs text-muted-foreground">
+                    Reason (shared with the customer)
+                  </Label>
+                  <Textarea
+                    className="mt-1"
+                    rows={2}
+                    placeholder={
+                      confirm.to === "rejected"
+                        ? "e.g. Item not available for these dates"
+                        : "e.g. Item damaged before shipping — refund transferred via bank"
+                    }
+                    value={cancelReason}
+                    onChange={(e) => setCancelReason(e.target.value)}
+                  />
+                </div>
+              )}
               <AlertDialogFooter>
                 <AlertDialogCancel>Cancel</AlertDialogCancel>
                 <AlertDialogAction
                   onClick={() => {
                     const target = confirm?.to;
+                    const destructive = confirm?.kind === "destructive";
                     setConfirm(null);
-                    if (target) transitionTo(target);
+                    if (target) transitionTo(target, destructive ? cancelReason : undefined);
                   }}
                 >
                   Confirm

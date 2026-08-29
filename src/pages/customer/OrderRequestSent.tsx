@@ -141,7 +141,7 @@ const OrderRequestSent = () => {
             <li className="flex gap-2"><span className="text-foreground">1.</span> Copy the message below and send it to the store on LINE.</li>
             <li className="flex gap-2"><span className="text-foreground">2.</span> The vendor reviews your order details.</li>
             <li className="flex gap-2"><span className="text-foreground">3.</span> The vendor confirms the delivery fee with you via chat.</li>
-            <li className="flex gap-2"><span className="text-foreground">4.</span> You pay externally and the vendor confirms payment in ROOP.</li>
+            <li className="flex gap-2"><span className="text-foreground">4.</span> Once approved, transfer the total and upload your payment slip on the payment page (we\u2019ll show it in Tracking).</li>
             <li className="flex gap-2"><span className="text-foreground">5.</span> Track everything from the Tracking page.</li>
           </ul>
         </div>

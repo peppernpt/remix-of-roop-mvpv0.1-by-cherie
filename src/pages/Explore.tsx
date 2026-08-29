@@ -54,6 +54,8 @@ const FALLBACK_IMG =
 
   "https://images.unsplash.com/photo-1490481651871-ab68de25d43d?w=600&h=800&fit=crop";
 
+const PAGE_SIZE = 24;
+
 const Explore = () => {
   const { user } = useAuth();
   const [search, setSearch] = useState("");
@@ -63,10 +65,13 @@ const Explore = () => {
   const [showFilters, setShowFilters] = useState(false);
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
 
   useEffect(() => {
     const load = async () => {
       setLoading(true);
+      setLoadError(null);
       const { data, error } = await supabase
         .from("products")
           .select(
@@ -78,7 +83,8 @@ const Explore = () => {
         .order("created_at", { ascending: false });
 
       if (error) {
-        console.error("Failed to load products", error);
+        // A failed query must read as a failure, never as an empty catalogue.
+        setLoadError(error.message);
         setProducts([]);
         setLoading(false);
         return;
@@ -166,6 +172,10 @@ const Explore = () => {
     products.forEach((p) => p.category && set.add(p.category));
     return ["All", ...Array.from(set).sort()];
   }, [products]);
+
+  useEffect(() => {
+    setVisibleCount(PAGE_SIZE);
+  }, [search, category, size, sort]);
 
   const filtered = useMemo(() => {
     let items = products;
@@ -314,17 +324,36 @@ const Explore = () => {
               </div>
             ))}
           </div>
+        ) : loadError ? (
+          <div className="text-center py-20">
+            <p className="text-muted-foreground text-lg">Couldn't load the catalogue</p>
+            <p className="text-muted-foreground/60 text-sm mt-1">
+              Check your connection and try again.
+            </p>
+            <Button variant="outline" className="mt-4" onClick={() => window.location.reload()}>
+              Retry
+            </Button>
+          </div>
         ) : filtered.length === 0 ? (
           <div className="text-center py-20">
             <p className="text-muted-foreground text-lg">No items found</p>
             <p className="text-muted-foreground/60 text-sm mt-1">Try adjusting your filters</p>
           </div>
         ) : (
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 md:gap-6">
-            {filtered.map((product) => (
-              <ProductCard key={product.id} product={product} />
-            ))}
-          </div>
+          <>
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 md:gap-6">
+              {filtered.slice(0, visibleCount).map((product) => (
+                <ProductCard key={product.id} product={product} />
+              ))}
+            </div>
+            {filtered.length > visibleCount && (
+              <div className="text-center mt-8">
+                <Button variant="outline" onClick={() => setVisibleCount((c) => c + PAGE_SIZE)}>
+                  Show more ({filtered.length - visibleCount} remaining)
+                </Button>
+              </div>
+            )}
+          </>
         )}
   </main>
   {user && <FloatingBagButton />}

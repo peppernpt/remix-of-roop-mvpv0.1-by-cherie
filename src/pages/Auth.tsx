@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/dialog";
 import { toast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
+import { stashPendingCustomerProfile } from "@/lib/pending-profile";
 import { useAuth } from "@/contexts/AuthContext";
 
 type Mode = "login" | "signup";
@@ -97,8 +98,31 @@ const LoginForm = ({
   const [password, setPassword] = useState("");
   const [showPwd, setShowPwd] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [sendingReset, setSendingReset] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const navigate = useNavigate();
+
+  const sendReset = async () => {
+    const parsed = z.string().trim().email().safeParse(email);
+    if (!parsed.success) {
+      setErrors({ email: "Enter your email above first, then tap \u201cForgot password\u201d." });
+      return;
+    }
+    setErrors({});
+    setSendingReset(true);
+    const { error } = await supabase.auth.resetPasswordForEmail(parsed.data, {
+      redirectTo: `${window.location.origin}/auth/reset`,
+    });
+    setSendingReset(false);
+    if (error) {
+      toast({ title: "Couldn't send reset email", description: error.message, variant: "destructive" });
+      return;
+    }
+    toast({
+      title: "Reset email sent",
+      description: "Check your inbox for a link to set a new password.",
+    });
+  };
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -177,6 +201,16 @@ const LoginForm = ({
             </button>
           </div>
           {errors.password && <p className="text-xs text-destructive mt-1">{errors.password}</p>}
+          <div className="text-right mt-1.5">
+            <button
+              type="button"
+              onClick={sendReset}
+              disabled={sendingReset}
+              className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2"
+            >
+              {sendingReset ? "Sending reset email…" : "Forgot password?"}
+            </button>
+          </div>
         </div>
 
         <Button type="submit" disabled={busy} className="w-full h-12 mt-2">
@@ -556,6 +590,17 @@ const SignupStep2 = ({
       const userId = authData.user?.id;
       if (!userId) throw new Error("Signup did not return a user id");
 
+      // Supabase obfuscates duplicate-email signups: an existing email comes
+      // back as a user with no identities. Don't report that as a new account.
+      if (!authData.session && (authData.user?.identities?.length ?? 0) === 0) {
+        toast({
+          title: "This email is already registered",
+          description: "Sign in instead \u2014 or use \u201cForgot password\u201d if you can\u2019t remember it.",
+          variant: "destructive",
+        });
+        return;
+      }
+
       // The session may not exist yet if email confirmation is on.
       const hasSession = !!authData.session;
 
@@ -581,6 +626,19 @@ const SignupStep2 = ({
           postal_code: postcode,
           country: "TH",
           is_default: true,
+        });
+      } else {
+        // Email confirmation pending: keep the typed details and apply them on
+        // the first authenticated session (see lib/pending-profile.ts).
+        stashPendingCustomerProfile(step1.email, {
+          fullName: `${step1.firstName} ${step1.lastName}`.trim(),
+          phone: step1.phone,
+          username: step1.username,
+          lineId: step1.lineId || null,
+          instagram: step1.instagram || null,
+          address,
+          city: city.trim(),
+          postcode,
         });
       }
 

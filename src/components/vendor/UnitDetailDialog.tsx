@@ -13,6 +13,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Mail, Phone, MapPin, Calendar, Package2, ArrowLeft, MessageCircle, Instagram } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
+import type { Database } from "@/integrations/supabase/types";
 import { toast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import { emitBookingsChanged } from "@/lib/sync";
@@ -159,14 +160,14 @@ const TRANSITIONS: Record<
   on_delivery: { label: "Move to On Rent", nextUnit: "on_rent", nextBooking: "on_rent" },
   on_rent: { label: "Move to On Return", nextUnit: "on_return", nextBooking: "on_return" },
   on_return: { label: "Move to For Review", nextUnit: "for_review", nextBooking: "for_review" },
-  for_review: {
-    label: "Mark as Available",
-    nextUnit: "available",
-    nextBooking: "completed",
-    clearBooking: true,
-  },
+  // Return inspection (condition + notes) is mandatory and lives in the order
+  // view — no shortcut from the unit dialog may skip it.
+  for_review: null,
   available: null,
 };
+
+const FOR_REVIEW_HINT =
+  "Complete the return inspection from Transactions \u2192 open the order \u2192 Return Inspection. The item is republished there after its condition is recorded.";
 
 const UnitDetailDialog = ({ unitId, open, onClose, onChanged }: Props) => {
   const [data, setData] = useState<UnitDetail | null>(null);
@@ -222,7 +223,7 @@ const UnitDetailDialog = ({ unitId, open, onClose, onChanged }: Props) => {
       const { data: bookingsData } = bookingIds.length
         ? await supabase
             .from("bookings")
-            .select("id, status, rental_start, rental_end, grand_total, rental_total, deposit_total, delivery_fee, customer_id, created_at, promo_code, delivery_address, delivery_province, delivery_method")
+            .select("id, status, rental_start, rental_end, grand_total, rental_total, deposit_total, delivery_fee, customer_id, created_at, promo_code, delivery_address, delivery_province, delivery_method, payment_slip_url")
             .in("id", bookingIds)
         : { data: [] as any[] };
 
@@ -373,9 +374,23 @@ const UnitDetailDialog = ({ unitId, open, onClose, onChanged }: Props) => {
         return;
       }
     }
+    // Same precondition as the order view: payment can only be accepted with
+    // a submitted slip, and accepting it must stamp payment_confirmed_at.
+    const acceptingPayment =
+      transition.nextBooking === "to_deliver" && data.booking?.status === "payment_submitted";
+    if (acceptingPayment && !(data.booking as any)?.payment_slip_url) {
+      toast({
+        title: "No payment slip yet",
+        description: "The customer hasn't uploaded a payment slip. Accept payment from the order view once it arrives.",
+        variant: "destructive",
+      });
+      return;
+    }
     setBusy(true);
     try {
-      const unitPatch: Record<string, any> = { status: transition.nextUnit };
+      const unitPatch: Database["public"]["Tables"]["product_units"]["Update"] = {
+        status: transition.nextUnit,
+      };
       if (transition.clearBooking) unitPatch.current_booking_id = null;
       const { error: uErr } = await supabase
         .from("product_units")
@@ -383,12 +398,23 @@ const UnitDetailDialog = ({ unitId, open, onClose, onChanged }: Props) => {
         .eq("id", data.id);
       if (uErr) throw uErr;
 
-      if (transition.nextBooking && data.current_booking_id) {
-        const { error: bErr } = await supabase
+      if (transition.nextBooking && data.current_booking_id && data.booking) {
+        const bookingPatch: Database["public"]["Tables"]["bookings"]["Update"] = {
+          status: transition.nextBooking,
+        };
+        if (acceptingPayment) bookingPatch.payment_confirmed_at = new Date().toISOString();
+        // Compare-and-swap on the booking's current status so a stale unit
+        // dialog can never regress or resurrect an order changed elsewhere.
+        const { data: updatedRows, error: bErr } = await supabase
           .from("bookings")
-          .update({ status: transition.nextBooking })
-          .eq("id", data.current_booking_id);
+          .update(bookingPatch)
+          .eq("id", data.current_booking_id)
+          .eq("status", data.booking.status)
+          .select("id");
         if (bErr) throw bErr;
+        if (!updatedRows?.length) {
+          throw new Error("This order was changed elsewhere. Refreshing \u2014 please review its new status.");
+        }
       }
       toast({ title: "Status updated" });
       emitBookingsChanged();
@@ -396,6 +422,7 @@ const UnitDetailDialog = ({ unitId, open, onClose, onChanged }: Props) => {
       await load();
     } catch (e: any) {
       toast({ title: "Update failed", description: e?.message, variant: "destructive" });
+      await load();
     } finally {
       setBusy(false);
     }
@@ -604,12 +631,21 @@ const UnitDetailDialog = ({ unitId, open, onClose, onChanged }: Props) => {
               </>
             )}
 
+            {(data?.displayStatus === "for_review" || data?.status === "for_review") && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                {FOR_REVIEW_HINT}
+              </div>
+            )}
             <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2 pt-2 border-t border-border">
               <Button variant="ghost" onClick={onClose}>Close</Button>
               {transition ? (
                 <Button onClick={handleTransition} disabled={busy}>
                   {busy ? "Updating…" : transition.label}
                 </Button>
+              ) : data?.displayStatus === "for_review" || data?.status === "for_review" ? (
+                <span className="self-center text-sm text-muted-foreground italic">
+                  Awaiting return inspection
+                </span>
               ) : (
                 <span className="self-center text-sm text-muted-foreground italic">
                   Available for booking

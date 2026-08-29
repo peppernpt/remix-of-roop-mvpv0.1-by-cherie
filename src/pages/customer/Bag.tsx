@@ -8,7 +8,16 @@ import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "@/hooks/use-toast";
 import { readBag, removeFromBag, clearBag, BagItem } from "@/lib/bag-store";
-import { fmtDate, deliveryMethodLabel } from "@/lib/booking-logic";
+import {
+  deliveryMethodLabel,
+  earliestStartDate,
+  isValidRentalDuration,
+  rentalDays,
+  startOfDay,
+  type DeliveryMethod,
+  type Province,
+} from "@/lib/booking-logic";
+import { parseDatabaseDate } from "@/lib/date-utils";
 import { findAvailableUnitForDateRange } from "@/lib/availability";
 import { RequestPolicyModal } from "@/components/customer/RequestPolicyModal";
 import {
@@ -32,6 +41,7 @@ const Bag = () => {
   const [storePolicy, setStorePolicy] = useState<string | null>(null);
   const [storePolicyImages, setStorePolicyImages] = useState<string[]>([]);
   const [storePolicyAcknowledged, setStorePolicyAcknowledged] = useState(false);
+  const [storePolicyLoaded, setStorePolicyLoaded] = useState(false);
 
 
   useEffect(() => {
@@ -56,6 +66,7 @@ const Bag = () => {
     setStorePolicy(null);
     setStorePolicyImages([]);
     setStorePolicyAcknowledged(false);
+    setStorePolicyLoaded(false);
     if (!vendorId) return;
     (async () => {
       const { data } = await supabase
@@ -70,6 +81,7 @@ const Bag = () => {
       setStoreName((data as any)?.store_name ?? null);
       setStorePolicy((data as any)?.rental_details_policy ?? null);
       setStorePolicyImages(((data as any)?.rental_policy_image_urls as string[] | null) ?? []);
+      setStorePolicyLoaded(true);
     })();
     return () => {
       cancelled = true;
@@ -134,17 +146,13 @@ const Bag = () => {
     setSubmitting(true);
 
     try {
-      console.log("[booking] auth.user.id:", user.id);
-
       // Defensive: ensure profile row exists for this auth user (FK target)
       const { data: existingProfile, error: pSelErr } = await supabase
         .from("profiles")
         .select("id")
         .eq("id", user.id)
         .maybeSingle();
-      if (pSelErr) console.warn("[booking] profile select error:", pSelErr);
       if (!existingProfile) {
-        console.log("[booking] profile missing — creating one");
         const { error: pInsErr } = await supabase.from("profiles").upsert(
           {
             id: user.id,
@@ -154,8 +162,6 @@ const Bag = () => {
           { onConflict: "id" }
         );
         if (pInsErr) throw pInsErr;
-      } else {
-        console.log("[booking] profile found");
       }
 
       // MVP enforces single-vendor bag — vendorId comes straight from the booking page.
@@ -225,6 +231,8 @@ const Bag = () => {
             selectedEndDate: i.endDate,
             productUnits: preferred,
             existingBookings,
+            candidateDeliveryMethod: i.deliveryMethod,
+            candidateProvince: i.province,
           }) ??
           findAvailableUnitForDateRange({
             productId: i.productId,
@@ -232,6 +240,8 @@ const Bag = () => {
             selectedEndDate: i.endDate,
             productUnits: units,
             existingBookings,
+            candidateDeliveryMethod: i.deliveryMethod,
+            candidateProvince: i.province,
           });
 
         if (import.meta.env.DEV) {
@@ -303,42 +313,43 @@ const Bag = () => {
           )
           .join("\n"),
       };
-      console.log("[booking] insert payload:", bookingPayload);
 
       const { data: booking, error: bErr } = await supabase
         .from("bookings")
         .insert(bookingPayload)
         .select("id, rental_start, rental_end")
         .single();
-      // TEMP debug: verify no timezone day-shift on save.
-      console.log("[booking] dates", {
-        selectedStartDate: startISO,
-        selectedEndDate: endISO,
-        payload_rental_start: bookingPayload.rental_start,
-        payload_rental_end: bookingPayload.rental_end,
-        saved_rental_start: booking?.rental_start,
-        saved_rental_end: booking?.rental_end,
-      });
-      if (bErr) {
-        console.error("[booking] insert error:", bErr);
-        throw bErr;
+      if (bErr) throw bErr;
+
+
+      // Insert booking_items. If any item fails (validation trigger, race on
+      // the unit, network), delete the just-created booking so no orphaned
+      // itemless request reaches the vendor.
+      try {
+        for (const r of reservations) {
+          const { error: biErr } = await supabase.from("booking_items").insert({
+            booking_id: booking.id,
+            product_id: r.item.productId,
+            product_unit_id: r.unitId,
+            rental_price: r.item.rentalTotal,
+            deposit_amount: r.item.depositTotal,
+          });
+          if (biErr) throw biErr;
+        }
+      } catch (itemErr) {
+        await supabase.from("booking_items").delete().eq("booking_id", booking.id);
+        await supabase.from("bookings").delete().eq("id", booking.id);
+        throw itemErr;
       }
 
-
-      // Insert booking_items + flip each unit to reserved
-      for (const r of reservations) {
-        const { error: biErr } = await supabase.from("booking_items").insert({
-          booking_id: booking.id,
-          product_id: r.item.productId,
-          product_unit_id: r.unitId,
-          rental_price: r.item.rentalTotal,
-          deposit_amount: r.item.depositTotal,
-        });
-        if (biErr) throw biErr;
-        await supabase
-          .from("product_units")
-          .update({ status: "reserved" })
-          .eq("id", r.unitId);
+      // Advisory unit flag only — availability is date-based, so a failure
+      // here must not block the request.
+      const { error: unitErr } = await supabase
+        .from("product_units")
+        .update({ status: "reserved" })
+        .in("id", reservations.map((r) => r.unitId));
+      if (unitErr && import.meta.env.DEV) {
+        console.warn("[booking] unit status update skipped:", unitErr.message);
       }
 
       clearBag();

@@ -1,7 +1,7 @@
 import { ReactNode, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
-import CustomerNav from "./CustomerNav";
+import CustomerNav, { CustomerBottomNav } from "./CustomerNav";
 
 interface Props {
   children: ReactNode;
@@ -24,10 +24,11 @@ const CustomerLayout = ({ children, hero, allowAnonymous = false }: Props) => {
   }, [user, loading, allowAnonymous, navigate]);
 
   return (
-    <div className="min-h-screen bg-muted/30 flex flex-col">
+    <div className="min-h-screen bg-muted/30 flex flex-col pb-16 md:pb-0">
       <CustomerNav />
       {hero}
       <main className="flex-1 container-main py-8 md:py-10">{children}</main>
+      <CustomerBottomNav />
     </div>
   );
 };

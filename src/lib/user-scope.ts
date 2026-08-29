@@ -9,7 +9,10 @@ const ACTIVE_USER_KEY = "roop:active-user";
 /** localStorage prefixes holding customer-specific state. */
 export const LOCAL_SCOPED_PREFIXES = ["roop:bag:v1:"];
 /** sessionStorage prefixes holding customer-specific state. */
-export const SESSION_SCOPED_PREFIXES = ["roop:booking-draft:", "roop:vendor-pending"];
+// NOTE: pending-signup stashes (roop:pending-customer:/roop:pending-store:)
+// are deliberately NOT scoped — they exist before a user scope exists and are
+// matched by email (see lib/pending-profile.ts).
+export const SESSION_SCOPED_PREFIXES = ["roop:booking-draft:"];
 
 export const GUEST_SCOPE = "guest";
 

@@ -23,13 +23,15 @@ const VendorEntry = () => {
         return;
       }
       setRoleLoading(true);
-      const { data } = await (supabase as any)
-        .from("user_roles")
+      // profiles.role is the single source of role truth in this app
+      // (RoleGuard and post-login routing use the same column).
+      const { data, error } = await supabase
+        .from("profiles")
         .select("role")
-        .eq("user_id", user.id);
+        .eq("id", user.id)
+        .maybeSingle();
       if (cancelled) return;
-      const roles = ((data ?? []) as Array<{ role: string }>).map((r) => r.role);
-      setRole(roles.includes("vendor") ? "vendor" : roles[0] ?? null);
+      setRole(error ? null : (data?.role ?? "customer"));
       setRoleLoading(false);
     };
     fetchRole();
